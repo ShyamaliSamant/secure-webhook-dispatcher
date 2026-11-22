@@ -1,0 +1,85 @@
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command:
+      - sh
+      - -c
+      - >-
+        if [ -n "$$REDIS_PASSWORD" ]; then
+          exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD";
+        else
+          exec redis-server --appendonly yes;
+        fi
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          if [ -n "$$REDIS_PASSWORD" ]; then
+            redis-cli -a "$$REDIS_PASSWORD" ping 2>/dev/null | grep -q PONG;
+          else
+            redis-cli ping | grep -q PONG;
+          fi
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: .
+    restart: unless-stopped
+    environment:
+      PORT: "5000"
+      NODE_ENV: production
+      API_KEY: ${API_KEY:-}
+      API_KEY_HEADER: ${API_KEY_HEADER:-X-API-Key}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
+      TRUST_PROXY: ${TRUST_PROXY:-false}
+      RATE_LIMIT_WINDOW_MS: ${RATE_LIMIT_WINDOW_MS:-60000}
+      RATE_LIMIT_MAX_REQUESTS: ${RATE_LIMIT_MAX_REQUESTS:-100}
+      RATE_LIMIT_DISPATCH_MAX: ${RATE_LIMIT_DISPATCH_MAX:-50}
+      WORKER_METRICS_PORT: ${WORKER_METRICS_PORT:-9090}
+    ports:
+      - "${PORT:-5000}:5000"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:5000/health/live').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+    command: ["node", "server.js"]
+
+  worker:
+    build: .
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-5}
+      WEBHOOK_TIMEOUT: ${WEBHOOK_TIMEOUT:-30000}
+      MAX_RESPONSE_SIZE: ${MAX_RESPONSE_SIZE:-1048576}
+      WORKER_METRICS_PORT: "9090"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:9090/metrics').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+    command: ["node", "worker.js"]
+
+volumes:
+  redis_data:
