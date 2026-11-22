@@ -26,7 +26,7 @@ A distributed, secure webhook delivery system built with Node.js, Express, and B
 
 ### Core Functionality
 - **Asynchronous Webhook Delivery** - Queue-based architecture for reliable delivery
-- **Automatic Retries** - 5 attempts with exponential backoff (2s, 4s, 8s, 16s)
+- **Automatic Retries** - 1 initial attempt plus up to 3 retries, with exponential backoff (2s, 4s, 8s)
 - **High Throughput** - Concurrent worker processing (configurable concurrency)
 - **Job Persistence** - Redis-backed queue with configurable retention
 

@@ -12,7 +12,7 @@ import { logger, sanitizeUrl } from '../utils/logger.js';
 export const webhookQueue = new Queue('webhooks', {
   connection: redisConnection,
   defaultJobOptions: {
-    attempts: 5,
+    attempts: 4,
     backoff: {
       type: 'exponential',
       delay: 2000 // Start with 2 seconds, doubles each retry

@@ -112,7 +112,7 @@ async function test_http_500_retries() {
   const testUrl = 'https://httpbin.org/status/500';
   
   console.log(`Setup: Submitting webhook to ${testUrl}`);
-  console.log(`Expected: Job should retry multiple times (up to 5 attempts)`);
+  console.log(`Expected: Job should retry multiple times (up to 4 total attempts)`);
   
   try {
     await addWebhookJob({
@@ -188,9 +188,7 @@ async function test_http_400_permanent() {
     
     console.log(`Actual: Job state = ${state}, attempts = ${attempts}`);
     
-    // CRITICAL BUG CHECK: This is the known bug from the summary
-    // Expected: 1 attempt
-    // Actual (with bug): 5 attempts due to moveToFailed not working
+    // Permanent client errors must bypass the normal retry policy.
     if (attempts === 1 && state === 'failed') {
       recordTest(
         'HTTP 400 permanent failure (1 attempt only)',

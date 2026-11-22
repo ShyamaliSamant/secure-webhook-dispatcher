@@ -197,8 +197,8 @@ function makeRequest(path, method = 'GET', body = null) {
     } else {
       const jobId = dispatchResponse.body.jobId;
       console.log(`✓ Webhook dispatched: ${jobId}`);
-      console.log('  Configured retries: 5 attempts with exponential backoff');
-      console.log('  Initial backoff: 2000ms, exponential growth');
+      console.log('  Configured attempts: 4 total (initial + 3 retries)');
+      console.log('  Backoff delays: 2000ms, 4000ms, 8000ms');
       
       // Wait for initial attempt + first few retries
       console.log('  Waiting 8 seconds for initial attempt + retries...');
@@ -228,10 +228,10 @@ function makeRequest(path, method = 'GET', body = null) {
       }
       
       // Wait for all retries to exhaust
-      // Exponential backoff: 2s, 4s, 8s, 16s, 32s = ~62s total + processing time
-      console.log('  Waiting 65 seconds for all retries to exhaust...');
+      // Exponential backoff: 2s, 4s, 8s = ~14s total + processing time
+      console.log('  Waiting 20 seconds for all retries to exhaust...');
       console.log('  (This is necessary to verify exhausted retry behavior)');
-      await sleep(65000);
+      await sleep(20000);
       
       // Check final status - should be failed
       const finalStatusResponse = await makeRequest(`/api/webhooks/status/${jobId}`);

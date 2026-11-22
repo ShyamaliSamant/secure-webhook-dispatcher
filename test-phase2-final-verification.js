@@ -85,7 +85,7 @@ async function test1_RetryBehavior() {
     // Test 1.1: HTTP 500 should trigger retries
     console.log('\n--- Test 1.1: HTTP 500 triggers retries ---');
     console.log('Setup: Submit webhook to httpbin.org/status/500');
-    console.log('Expected: Job retries 5 times with exponential backoff, then fails');
+    console.log('Expected: Job makes 4 total attempts (initial + 3 retries), then fails');
     console.log();
     
     const jobId500 = generateJobId();
@@ -101,8 +101,8 @@ async function test1_RetryBehavior() {
     await addWebhookJob(jobData500);
     
     // Wait for job to fail after retries
-    console.log('Waiting for job to complete retries (may take ~30 seconds)...');
-    const result500 = await waitForJobState(jobId500, ['failed', 'completed'], 90);
+    console.log('Waiting for job to complete retries (backoff delays total 14 seconds)...');
+    const result500 = await waitForJobState(jobId500, ['failed', 'completed'], 45);
     
     if (result500.state === 'failed') {
       const job = result500.job;
@@ -112,10 +112,10 @@ async function test1_RetryBehavior() {
       console.log(`Actual: Job failed after ${attemptsMade} attempts`);
       console.log(`Reason: ${failedReason}`);
       
-      if (attemptsMade === 5) {
-        pass('HTTP 500 retried 5 times before permanent failure');
+      if (attemptsMade === 4) {
+        pass('HTTP 500 made 4 total attempts (initial + 3 retries)');
       } else {
-        fail('HTTP 500 retry count', `Expected 5 attempts, got ${attemptsMade}`);
+        fail('HTTP 500 retry count', `Expected 4 attempts, got ${attemptsMade}`);
       }
       
       if (failedReason && failedReason.includes('500')) {
