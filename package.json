@@ -9,6 +9,7 @@
     "start": "node server.js",
     "worker": "node worker.js",
     "worker:dev": "nodemon worker.js",
+    "test:bullmq-redis-config": "node test-bullmq-redis-config.js",
     "test:destination-rate-limit": "node test-destination-rate-limit.js"
   },
   "keywords": [

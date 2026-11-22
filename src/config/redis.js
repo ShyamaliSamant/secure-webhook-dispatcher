@@ -11,11 +11,10 @@ import { logger } from '../utils/logger.js';
  * Get Redis connection options from environment variables
  * Supports both REDIS_URL and individual REDIS_HOST/PORT settings
  * 
- * @returns {string|Object} Redis connection URL string or configuration object for ioredis
+ * @returns {string|Object} Raw Redis URL or ioredis options for direct clients
  */
 export function getRedisConnection() {
-  // Check for REDIS_URL first (connection string format)
-  // BullMQ/ioredis accepts URL strings directly
+  // Direct ioredis clients such as health checks accept a raw connection URL.
   if (process.env.REDIS_URL) {
     // Return URL string directly - ioredis will parse it
     // Note: maxRetriesPerRequest and retry strategy are configured in Queue options
@@ -49,6 +48,25 @@ export function getRedisConnection() {
   }
 
   return config;
+}
+
+/**
+ * Get Redis connection options compatible with BullMQ Queue.
+ * The health service uses getRedisConnection() directly and retains raw URL
+ * support; BullMQ requires a Redis options object for URL-based connections.
+ *
+ * @returns {Object} Redis connection options for BullMQ Queue
+ */
+export function getBullMQConnectionOptions() {
+  const connection = getRedisConnection();
+  if (typeof connection === 'string') {
+    return {
+      url: connection,
+      maxRetriesPerRequest: 3,
+      enableReadyCheck: true
+    };
+  }
+  return connection;
 }
 
 /**
@@ -125,10 +143,10 @@ export function getWorkerRedisConnection() {
  * Redis connection configuration for BullMQ Queue (producer)
  * This is used by the API process to add jobs to the queue
  */
-export const redisConnection = getRedisConnection();
+export const redisConnection = getBullMQConnectionOptions();
 
 // Log connection info (without credentials)
-const redisHost = typeof redisConnection === 'string' 
+const redisHost = process.env.REDIS_URL
   ? 'REDIS_URL (connection string)' 
   : `${redisConnection.host || 'localhost'}:${redisConnection.port || 6379}`;
 

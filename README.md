@@ -433,7 +433,27 @@ Set `API_KEY`, `ALLOWED_ORIGINS`, and optional `REDIS_PASSWORD` through the depl
 
 ### Public hosting
 
-Deploy `server.js` as an API/web service and `worker.js` as a separate always-on background service. Both services must receive the same `REDIS_URL` or Redis host/port/password settings and database. Use `rediss://` URLs for TLS Redis providers.
+Deploy `server.js` as an API/web service and `worker.js` as a separate background service. Both services must receive the same `REDIS_URL` or Redis host/port/password settings and database. Use `rediss://` URLs for TLS Redis providers. The Railway Free plan uses serverless/sleep behavior for services and databases.
+
+### Railway
+
+Use three separate Railway services:
+
+1. **Redis**: add a private Railway Redis database.
+2. **API**: start with `node server.js`, generate public networking, and set health check `/health/live`.
+3. **Worker**: start with `node worker.js`, without public networking.
+
+Set `REDIS_URL` by reference in both API and Worker. For a Redis service named `Redis`:
+
+```text
+REDIS_URL=${{Redis.REDIS_URL}}
+```
+
+Set `API_KEY` manually in the API service's Railway secret variables. Set `NODE_ENV=production`, `ALLOWED_ORIGINS`, worker settings, destination limiter settings, and rate-limit settings in the relevant services. Do not commit or print real secret values.
+
+After deployment, verify `/health/live`, `/health/ready`, an authenticated dispatch, Worker logs, the worker Redis connection, and delivery to a public test endpoint.
+
+On the $0 Free plan, usage is limited to `$1/month`, services sleep after about 5-10 minutes of outbound inactivity, and all services stop when that usage is exhausted until the next billing cycle or usage reset.
 
 Free-tier limitations:
 
