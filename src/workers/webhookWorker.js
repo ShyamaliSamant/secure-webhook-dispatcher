@@ -14,6 +14,7 @@ import {
   recordRetryAttempt
 } from '../services/metricsService.js';
 import { addToDLQ } from '../services/dlqService.js';
+import { closeDestinationRateLimiter } from '../utils/destinationRateLimiter.js';
 
 // Worker logger with component context
 const workerLogger = createLogger({ component: 'worker' });
@@ -24,6 +25,8 @@ let heartbeatRedisClient = null;
 
 // Worker configuration from environment
 const WORKER_CONCURRENCY = parseInt(process.env.WORKER_CONCURRENCY || '5', 10);
+const WORKER_JOB_LOCK_DURATION =
+  parseInt(process.env.WORKER_JOB_LOCK_DURATION_MS || '300000', 10);
 
 /**
  * Process a webhook delivery job
@@ -31,7 +34,7 @@ const WORKER_CONCURRENCY = parseInt(process.env.WORKER_CONCURRENCY || '5', 10);
  * @param {Object} job - BullMQ job object
  * @returns {Promise<Object>} Processing result
  */
-async function processWebhookJob(job) {
+async function processWebhookJob(job, token) {
   const { jobId, destinationUrl, eventId, payload } = job.data;
   
   // Create job-specific logger with context
@@ -52,7 +55,13 @@ async function processWebhookJob(job) {
   
   try {
     // Deliver webhook via HTTP POST
-    const result = await deliverWebhook(job.data);
+    const result = await deliverWebhook(job.data, {
+      renewLock: async () => {
+        if (token) {
+          await job.extendLock(token, WORKER_JOB_LOCK_DURATION);
+        }
+      }
+    });
     
     const durationSeconds = (Date.now() - startTime) / 1000;
     
@@ -121,7 +130,7 @@ export function startWebhookWorker() {
       concurrency: WORKER_CONCURRENCY,
       
       // Prevent job stalling detection issues
-      lockDuration: 60000,  // 60 seconds
+      lockDuration: WORKER_JOB_LOCK_DURATION,
       
       // Remove completed jobs (keep for 24 hours as configured in queue)
       removeOnComplete: { count: 0 },  // Let queue config handle retention
@@ -277,6 +286,7 @@ export async function shutdownWorker(worker) {
     
     // Close worker gracefully (waits for active jobs to complete)
     await worker.close();
+    await closeDestinationRateLimiter();
     workerLogger.info('Worker shutdown complete');
   } catch (error) {
     workerLogger.error({

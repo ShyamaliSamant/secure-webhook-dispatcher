@@ -63,19 +63,28 @@ export function getWorkerRedisConnection() {
   if (process.env.REDIS_URL) {
     // For connection string, we need to return config object
     // to ensure maxRetriesPerRequest: null is set
-    // Parse basic URL format: redis://[user:password@]host:port[/db]
+    // Supports redis:// and TLS-protected rediss:// provider URLs.
     try {
       const url = new URL(process.env.REDIS_URL);
+      const isTls = url.protocol === 'rediss:';
       const config = {
         host: url.hostname,
-        port: parseInt(url.port, 10) || 6379,
+        port: parseInt(url.port, 10) || (isTls ? 6380 : 6379),
         maxRetriesPerRequest: null,  // REQUIRED for Worker
         enableReadyCheck: false,      // Recommended for Worker
       };
+
+      if (isTls) {
+        config.tls = {};
+      }
       
       // Add password if present in URL
       if (url.password) {
-        config.password = url.password;
+        config.password = decodeURIComponent(url.password);
+      }
+
+      if (url.username && url.username !== 'default') {
+        config.username = decodeURIComponent(url.username);
       }
       
       // Add database number if present

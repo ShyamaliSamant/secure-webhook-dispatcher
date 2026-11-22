@@ -1,6 +1,7 @@
 /**
  * Focused security hardening verification.
- * The API and any child process must be started with a temporary API key.
+ * Starts an isolated API server with test-only authentication, rate-limit,
+ * and CORS configuration. Security protections remain enabled.
  */
 
 import http from 'http';
@@ -8,11 +9,12 @@ import { spawn } from 'child_process';
 import { readFile } from 'fs/promises';
 
 const host = '127.0.0.1';
-const port = Number(process.env.PORT || 5000);
+const port = Number(process.env.SECURITY_TEST_PORT || 5129);
 const testApiKey = 'temporary-verification-key-2026';
 let passed = 0;
 let failed = 0;
 let skipped = 0;
+let apiProcess = null;
 
 function request({ hostname = host, port: requestPort = port, path = '/', method = 'GET', headers = {} } = {}) {
   return new Promise((resolve, reject) => {
@@ -65,10 +67,58 @@ async function productionStartupWithoutKey() {
   });
 }
 
+async function startTestApi() {
+  apiProcess = spawn(process.execPath, ['server.js'], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      NODE_ENV: 'development',
+      PORT: String(port),
+      API_KEY: testApiKey,
+      API_KEY_HEADER: 'X-API-Key',
+      ALLOWED_ORIGINS: 'https://allowed.example',
+      RATE_LIMIT_WINDOW_MS: '60000',
+      RATE_LIMIT_MAX_REQUESTS: '3',
+      RATE_LIMIT_DISPATCH_MAX: '3',
+      TRUST_PROXY: 'false',
+      REDIS_HOST: process.env.REDIS_HOST || '127.0.0.1',
+      REDIS_PORT: process.env.REDIS_PORT || '6379'
+    },
+    stdio: ['ignore', 'ignore', 'pipe']
+  });
+
+  let startupOutput = '';
+  apiProcess.stderr.on('data', chunk => { startupOutput += chunk.toString(); });
+
+  for (let i = 0; i < 50; i++) {
+    try {
+      const response = await request({ path: '/health/live' });
+      if (response.status === 200) return;
+    } catch {
+      // Server may still be starting.
+    }
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+
+  throw new Error(`Test API did not become ready${startupOutput ? `: ${startupOutput.slice(-500)}` : ''}`);
+}
+
+async function stopTestApi() {
+  if (!apiProcess) return;
+  const child = apiProcess;
+  apiProcess = null;
+  if (child.exitCode !== null) return;
+  await new Promise(resolve => {
+    child.once('exit', () => resolve());
+    child.kill('SIGTERM');
+  });
+}
+
 async function main() {
   console.log('Focused Security Hardening Verification');
 
   try {
+    await startTestApi();
     const missing = await request({ path: '/api/webhooks/status/test-job-id' });
     check('missing API key returns 401', missing.status === 401);
 
@@ -151,6 +201,8 @@ async function main() {
     failed++;
     console.log(`FAIL: health/CORS/Helmet verification - ${error.message}`);
   }
+
+  await stopTestApi();
 
   console.log('');
   console.log(`PASS=${passed} FAIL=${failed} SKIPPED=${skipped}`);

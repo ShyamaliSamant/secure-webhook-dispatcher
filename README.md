@@ -142,8 +142,8 @@ A distributed, secure webhook delivery system built with Node.js, Express, and B
 
 ### 1. Clone Repository
 ```bash
-git clone <repository-url>
-cd webhook-dispatcher
+git clone https://github.com/ShyamaliSamant/secure-webhook-dispatcher.git
+cd secure-webhook-dispatcher
 ```
 
 ### 2. Install Dependencies
@@ -169,8 +169,30 @@ brew install redis
 ### 4. Configure Environment
 ```bash
 cp .env.example .env
-# Edit .env with your configuration
+# Edit only the local .env for development
 ```
+
+Required variables:
+
+| Variable | Local default | Production requirement |
+|----------|---------------|------------------------|
+| `NODE_ENV` | `development` | Set to `production` |
+| `API_KEY` | Not set | Required; set through the process environment or secret manager |
+| `REDIS_HOST` / `REDIS_PORT` | `localhost` / `6379` | Use the reachable Redis host and port |
+| `REDIS_URL` | Not set | Alternative to host/port; use `rediss://` for TLS Redis |
+| `REDIS_PASSWORD` | Not set | Set only if Redis authentication is enabled |
+| `ALLOWED_ORIGINS` | Not set | Required for browser CORS in production |
+
+Optional worker and API settings include `PORT`, `WORKER_CONCURRENCY`, `WEBHOOK_TIMEOUT`, `MAX_RESPONSE_SIZE`, `RATE_LIMIT_*`, `WORKER_JOB_LOCK_DURATION_MS`, and `DESTINATION_RATE_LIMIT_*`.
+
+Never commit `.env` or put real secrets in `.env.example`, logs, source code, or shell history.
+
+## API / worker / Redis architecture
+
+- The Express API (`server.js`) validates requests and adds BullMQ jobs to Redis.
+- The background worker (`worker.js`) consumes jobs and performs SSRF validation, DNS pinning, outbound destination rate limiting, HTTP delivery, retries, and DLQ handling.
+- Redis stores the BullMQ queue, worker heartbeat, dead-letter state, and shared per-domain destination limiter counters.
+- API and worker are separate processes. Deploy or start both against the same Redis database.
 
 ---
 
@@ -183,6 +205,10 @@ Create a `.env` file in the project root:
 ```env
 # Server Configuration
 PORT=5000
+NODE_ENV=development
+API_KEY=
+API_KEY_HEADER=X-API-Key
+ALLOWED_ORIGINS=
 
 # Redis Configuration
 # Option 1: Use connection string
@@ -211,6 +237,18 @@ MAX_RESPONSE_SIZE=1048576    # Max response size in bytes (1MB)
 | `WORKER_CONCURRENCY` | 5 | Number of concurrent webhook deliveries |
 | `WEBHOOK_TIMEOUT` | 30000 | HTTP request timeout (ms) |
 | `MAX_RESPONSE_SIZE` | 1048576 | Maximum response body size (bytes) |
+| `WORKER_JOB_LOCK_DURATION_MS` | 300000 | BullMQ job lock duration while delivery/rate-limit waits are active |
+| `DESTINATION_RATE_LIMIT_MAX` | 10 | Maximum outbound requests per destination in the configured duration |
+| `DESTINATION_RATE_LIMIT_DURATION` | 60000 | Destination sliding-window duration in milliseconds |
+| `DESTINATION_RATE_LIMIT_KEY_PREFIX` | `webhook-dispatcher:destination-rate-limit` | Redis key namespace for shared destination limits |
+
+### Outbound destination rate limiting
+
+Before each webhook HTTP request, the worker applies a per-hostname sliding-window limit. The window state is stored in Redis, so every worker process shares the same counters. Hostnames are normalized to lowercase (including removing a trailing dot), and limits are independent for each destination domain.
+
+When the limit is reached, the worker waits for the oldest request to leave the sliding window rather than rejecting or dropping the job. The BullMQ job lock is renewed during this wait, allowing the worker to remain active for a configurable window. Redis failures fail the delivery normally for BullMQ retry rather than bypassing the configured limit.
+
+An upstream HTTP `429` is retryable. Existing permanent `4xx`, SSRF, redirect, `5xx`, network, timeout, and response-size behavior is unchanged.
 
 ---
 
@@ -329,8 +367,10 @@ Content-Type: application/json
 
 #### 1. Test Successful Delivery
 ```bash
+export API_KEY="your-local-api-key"
 curl -X POST http://localhost:5000/api/webhooks/dispatch \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: $API_KEY" \
   -d '{
     "destinationUrl": "https://webhook.site/unique-id",
     "eventId": "test-123",
@@ -345,6 +385,7 @@ Expected: HTTP 202 with jobId
 # Should be blocked with HTTP 400
 curl -X POST http://localhost:5000/api/webhooks/dispatch \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: $API_KEY" \
   -d '{
     "destinationUrl": "http://localhost/webhook",
     "eventId": "test-ssrf",
@@ -359,6 +400,7 @@ Expected: HTTP 400 - "Private IP addresses are not allowed"
 # Should be blocked with HTTP 400
 curl -X POST http://localhost:5000/api/webhooks/dispatch \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: $API_KEY" \
   -d '{
     "destinationUrl": "http://169.254.169.254/latest/meta-data",
     "eventId": "test-metadata",
@@ -379,125 +421,50 @@ Use these public webhook testing services:
 
 ## 🚢 Deployment
 
-### Using PM2 (Recommended)
+### Docker Compose
+
+The current setup starts API, worker, and Redis as separate services:
 
 ```bash
-# Install PM2
-npm install -g pm2
-
-# Start API and Worker
-pm2 start server.js --name webhook-api
-pm2 start worker.js --name webhook-worker -i 5  # 5 worker instances
-
-# Save configuration
-pm2 save
-pm2 startup
+docker compose up -d --build
 ```
 
-### Using Docker
+Set `API_KEY`, `ALLOWED_ORIGINS`, and optional `REDIS_PASSWORD` through the deployment environment or a local untracked `.env`; never commit secrets. The compose Redis volume `redis_data` persists Redis append-only data.
 
-```dockerfile
-# Dockerfile
-FROM node:18-alpine
+### Public hosting
 
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci --production
-COPY . .
+Deploy `server.js` as an API/web service and `worker.js` as a separate always-on background service. Both services must receive the same `REDIS_URL` or Redis host/port/password settings and database. Use `rediss://` URLs for TLS Redis providers.
 
-EXPOSE 5000
+Free-tier limitations:
 
-# API Server
-CMD ["node", "server.js"]
+- HTTP/static free tiers cannot reliably run BullMQ background workers.
+- Sleeping web services can delay API/health traffic.
+- Managed Redis free tiers may limit memory, connections, persistence, eviction behavior, or TLS support.
+- Ephemeral container storage is not durable Redis storage.
 
-# For worker, override CMD:
-# CMD ["node", "worker.js"]
-```
+Required production environment:
 
-```yaml
-# docker-compose.yml
-version: '3.8'
-services:
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis-data:/data
+- `NODE_ENV=production`
+- `API_KEY`
+- `ALLOWED_ORIGINS`
+- `REDIS_URL` or `REDIS_HOST`/`REDIS_PORT`/`REDIS_PASSWORD`
+- Worker settings: `WORKER_CONCURRENCY`, `WEBHOOK_TIMEOUT`, `MAX_RESPONSE_SIZE`
+- Destination limit settings: `DESTINATION_RATE_LIMIT_MAX`, `DESTINATION_RATE_LIMIT_DURATION`, optional key prefix
 
-  api:
-    build: .
-    ports:
-      - "5000:5000"
-    environment:
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-    depends_on:
-      - redis
-    command: node server.js
+Health checks:
 
-  worker:
-    build: .
-    environment:
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - WORKER_CONCURRENCY=5
-    depends_on:
-      - redis
-    command: node worker.js
-    deploy:
-      replicas: 3
+- API liveness: `GET /health/live`
+- API readiness: `GET /health/ready`
+- Worker metrics: `GET http://<worker-host>:9090/metrics`
 
-volumes:
-  redis-data:
-```
+Deployment verification:
 
-### Using systemd
-
-**API Service (`/etc/systemd/system/webhook-api.service`):**
-```ini
-[Unit]
-Description=Webhook Dispatcher API
-After=network.target redis.service
-
-[Service]
-Type=simple
-User=webhook
-WorkingDirectory=/app/webhook-dispatcher
-Environment=NODE_ENV=production
-ExecStart=/usr/bin/node server.js
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-```
-
-**Worker Service (`/etc/systemd/system/webhook-worker.service`):**
-```ini
-[Unit]
-Description=Webhook Dispatcher Worker
-After=network.target redis.service
-
-[Service]
-Type=simple
-User=webhook
-WorkingDirectory=/app/webhook-dispatcher
-Environment=NODE_ENV=production
-ExecStart=/usr/bin/node worker.js
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-```
-
-```bash
-# Enable and start services
-sudo systemctl enable webhook-api webhook-worker
-sudo systemctl start webhook-api webhook-worker
-
-# Check status
-sudo systemctl status webhook-api webhook-worker
-```
+1. Confirm Redis `PING` from both API and worker.
+2. Confirm `/health/live` returns 200.
+3. Confirm `/health/ready` reports Redis and worker healthy.
+4. Confirm the worker remains running and remains reachable on port 9090 internally.
+5. Send an authenticated status request.
+6. Dispatch a test webhook to an endpoint you control and confirm the job completes.
 
 ---
 

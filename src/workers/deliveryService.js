@@ -4,6 +4,7 @@ import dns from 'dns';
 import { promisify } from 'util';
 import { validateDestinationUrl, isPrivateOrLoopbackIP } from '../utils/ssrfProtection.js';
 import { createLogger, sanitizeUrl } from '../utils/logger.js';
+import { waitForDestinationSlot } from '../utils/destinationRateLimiter.js';
 
 const dnsLookupAll = promisify(dns.lookup);
 
@@ -75,6 +76,20 @@ export function executeWebhookRequest({
             message: 'Webhook delivered successfully'
           });
         } else if (statusCode >= 400 && statusCode < 500) {
+          if (statusCode === 429) {
+            const error = new Error(`HTTP 429: Rate limited (will retry)`);
+            error.statusCode = statusCode;
+            error.retryable = true;
+            const retryAfter = res.headers['retry-after'];
+            if (retryAfter) {
+              const seconds = Number(retryAfter);
+              if (Number.isFinite(seconds) && seconds >= 0) {
+                error.retryAfterMs = seconds * 1000;
+              }
+            }
+            settleReject(error);
+            return;
+          }
           const error = new Error(`HTTP ${statusCode}: Client error (no retry)`);
           error.permanent = true;
           error.statusCode = statusCode;
@@ -146,7 +161,7 @@ export function executeWebhookRequest({
  * @returns {Promise<Object>} Delivery result
  * @throws {Error} On delivery failure
  */
-export async function deliverWebhook(jobData) {
+export async function deliverWebhook(jobData, options = {}) {
   const { destinationUrl, payload, jobId, eventId } = jobData;
   
   // Create job-specific logger
@@ -276,6 +291,14 @@ export async function deliverWebhook(jobData) {
   
   // Select http or https module based on protocol
   const client = parsedUrl.protocol === 'https:' ? https : http;
+
+  // Wait for a shared Redis slot immediately before every outbound request.
+  // Renewing the BullMQ job lock while waiting keeps long rate-limit windows safe.
+  await waitForDestinationSlot(hostname, async (retryAfterMs) => {
+    if (typeof options.renewLock === 'function') {
+      await options.renewLock(retryAfterMs);
+    }
+  });
   
   jobLogger.debug({
     method: 'POST',

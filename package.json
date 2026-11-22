@@ -8,7 +8,8 @@
     "dev": "nodemon server.js",
     "start": "node server.js",
     "worker": "node worker.js",
-    "worker:dev": "nodemon worker.js"
+    "worker:dev": "nodemon worker.js",
+    "test:destination-rate-limit": "node test-destination-rate-limit.js"
   },
   "keywords": [
     "webhook",
